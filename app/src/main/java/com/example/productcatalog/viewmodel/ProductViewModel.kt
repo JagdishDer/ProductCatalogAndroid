@@ -90,33 +90,15 @@ class ProductViewModel(
     // ------------------------------------------------
 
     private fun visibleProducts(): List<Product> {
-        val selected = _state.value.selectedCategory
-
-        val remoteIds = remoteProducts
-            .mapTo(mutableSetOf()) { it.id }
-
-        // Edited products can move between categories.
-        // Keep them visible even when absent from
-        // the current server page.
-        val pinnedEdits = editedProducts.values
-            .filter { it.id !in remoteIds }
-
-        val remoteWithEdits = remoteProducts.map {
-            editedProducts[it.id] ?: it
-        }
-
-        return (
-            addedProducts.asReversed() +
-                pinnedEdits +
-                remoteWithEdits
-            )
-            .filter { product ->
-                product.id !in deletedIds &&
-                    (selected == null ||
-                        product.category == selected)
-            }
-            .distinctBy { it.id }
+        return ProductSessionLogic.visibleProducts(
+            remoteProducts = remoteProducts,
+            addedProducts = addedProducts,
+            editedProducts = editedProducts,
+            deletedIds = deletedIds,
+            selectedCategory = _state.value.selectedCategory
+        )
     }
+
 
     private fun publishProducts() {
         _state.value = _state.value.copy(
@@ -218,7 +200,10 @@ class ProductViewModel(
                     it.id
                 }
 
-                val next = page.skip + page.products.size
+                val next = ProductSessionLogic.nextServerOffset(
+                    serverSkip = page.skip,
+                    returnedCount = page.products.size
+                )
 
                 _state.value = _state.value.copy(
                     isLoading = false,
@@ -278,7 +263,10 @@ class ProductViewModel(
                     remoteProducts + page.products
                     ).distinctBy { it.id }
 
-                val next = page.skip + page.products.size
+                val next = ProductSessionLogic.nextServerOffset(
+                    serverSkip = page.skip,
+                    returnedCount = page.products.size
+                )
 
                 _state.value = _state.value.copy(
                     isLoadingMore = false,
