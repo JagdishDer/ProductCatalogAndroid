@@ -1,22 +1,13 @@
 
 package com.example.productcatalog.data.remote
 
-import com.example.productcatalog.data.model.AuthUser
-import com.example.productcatalog.data.model.LoginRequest
-import com.example.productcatalog.data.model.LoginResponse
-import com.example.productcatalog.data.model.ProductCategory
-import com.example.productcatalog.data.model.ProductPage
+import com.example.productcatalog.data.model.*
 import retrofit2.Response
-import retrofit2.http.Body
-import retrofit2.http.GET
-import retrofit2.http.POST
-import retrofit2.http.Path
-import retrofit2.http.Query
+import retrofit2.http.*
 
 interface DummyJsonApi {
 
-    // Authentication — existing Phase 1 endpoints
-
+    // Authentication
     @POST("auth/login")
     suspend fun login(
         @Body request: LoginRequest
@@ -25,25 +16,41 @@ interface DummyJsonApi {
     @GET("auth/me")
     suspend fun getCurrentUser(): Response<AuthUser>
 
-    // Product list with pagination
-
+    // Product listing
     @GET("products")
     suspend fun getProducts(
         @Query("limit") limit: Int,
         @Query("skip") skip: Int
     ): ProductPage
 
-    // All available product categories
-
+    // Categories
     @GET("products/categories")
     suspend fun getCategories(): List<ProductCategory>
 
-    // Products filtered by category
-
+    // Filtered products
     @GET("products/category/{slug}")
     suspend fun getProductsByCategory(
         @Path("slug") slug: String,
         @Query("limit") limit: Int,
         @Query("skip") skip: Int
     ): ProductPage
+
+    // Add a product
+    @POST("products/add")
+    suspend fun addProduct(
+        @Body request: ProductWriteRequest
+    ): Response<Product>
+
+    // Update an existing product
+    @PUT("products/{id}")
+    suspend fun updateProduct(
+        @Path("id") id: Int,
+        @Body request: ProductWriteRequest
+    ): Response<Product>
+
+    // Delete an existing product
+    @DELETE("products/{id}")
+    suspend fun deleteProduct(
+        @Path("id") id: Int
+    ): Response<DeleteProductResponse>
 }

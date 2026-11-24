@@ -2,6 +2,7 @@
 package com.example.productcatalog.ui.products
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -9,15 +10,16 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.SubcomposeAsyncImage
-import com.example.productcatalog.data.model.Product
-import com.example.productcatalog.data.model.ProductCategory
+import com.example.productcatalog.data.model.*
 import com.example.productcatalog.viewmodel.ProductUiState
 import kotlinx.coroutines.flow.distinctUntilChanged
 
@@ -29,16 +31,26 @@ fun ProductListScreen(
     onLoadMore: () -> Unit,
     onRetryLoadMore: () -> Unit,
     onRetryCategories: () -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    onAdd: () -> Unit,
+    onEdit: (Int) -> Unit,
+    onDelete: (Int) -> Unit,
+    onClearMutationError: () -> Unit
 ) {
     val listState = rememberLazyListState()
+    val snackbarHost = remember { SnackbarHostState() }
 
-    // Return to the top whenever the selected filter changes.
     LaunchedEffect(state.selectedCategory) {
         listState.scrollToItem(0)
     }
 
-    // Automatically request the next page near the list bottom.
+    LaunchedEffect(state.mutationError) {
+        state.mutationError?.let { message ->
+            snackbarHost.showSnackbar(message)
+            onClearMutationError()
+        }
+    }
+
     LaunchedEffect(
         listState,
         state.products.size,
@@ -54,12 +66,9 @@ fun ProductListScreen(
         }
             .distinctUntilChanged()
             .collect { lastVisible ->
-                val nearBottom =
-                    lastVisible >= state.products.size - 4
-
                 if (
                     state.products.isNotEmpty() &&
-                    nearBottom &&
+                    lastVisible >= state.products.size - 4 &&
                     state.hasMore &&
                     !state.isLoading &&
                     !state.isLoadingMore &&
@@ -71,124 +80,150 @@ fun ProductListScreen(
             }
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize()
-    ) {
-        // Header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Products",
-                style = MaterialTheme.typography.headlineSmall
-            )
+    Scaffold(
+        snackbarHost = {
+            SnackbarHost(snackbarHost)
+        }
+    ) { padding ->
 
-            Row {
-                TextButton(onClick = onRefresh) {
-                    Text("Refresh")
-                }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                horizontalArrangement =
+                    Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Products",
+                    style =
+                        MaterialTheme.typography.headlineSmall
+                )
 
                 TextButton(onClick = onLogout) {
                     Text("Logout")
                 }
             }
-        }
 
-        // Category dropdown and product count
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(modifier = Modifier.weight(1f)) {
-                CategoryDropdown(
-                    categories = state.categories,
-                    selectedSlug = state.selectedCategory,
-                    onSelected = onSelectCategory
-                )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    CategorySelector(
+                        categories = state.categories,
+                        selected = state.selectedCategory,
+                        onSelected = onSelectCategory
+                    )
+                }
+
+                Spacer(Modifier.width(8.dp))
+
+                Button(onClick = onAdd) {
+                    Text("+ Add")
+                }
             }
 
-            Spacer(Modifier.width(12.dp))
+            if (state.categoriesError != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Categories unavailable",
+                        modifier = Modifier.weight(1f),
+                        color = MaterialTheme.colorScheme.error
+                    )
 
-            Text(
-                text = "${state.products.size} / ${state.total}",
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
+                    TextButton(onClick = onRetryCategories) {
+                        Text("Retry")
+                    }
+                }
+            }
 
-        if (state.categoriesError != null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
+                horizontalArrangement =
+                    Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Categories unavailable",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f)
+                    "${state.products.size} session products",
+                    style = MaterialTheme.typography.bodySmall
                 )
 
-                TextButton(onClick = onRetryCategories) {
-                    Text("Retry")
+                TextButton(onClick = onRefresh) {
+                    Text("Refresh")
                 }
             }
-        }
 
-        Spacer(Modifier.height(12.dp))
+            HorizontalDivider()
 
-        HorizontalDivider()
-
-        // Content states
-        when {
-            state.isLoading -> {
-                CenteredMessage(
-                    message = "Loading products...",
-                    showProgress = true
-                )
-            }
-
-            state.error != null -> {
-                ErrorContent(
-                    message = state.error,
-                    onRetry = onRefresh
-                )
-            }
-
-            state.products.isEmpty() -> {
-                ErrorContent(
-                    message = "No products found.",
-                    onRetry = onRefresh,
-                    buttonText = "Refresh"
-                )
-            }
-
-            else -> {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    state = listState,
-                    contentPadding = PaddingValues(
-                        vertical = 8.dp
+            when {
+                state.isLoading -> {
+                    CenterMessage(
+                        "Loading products...",
+                        loading = true
                     )
-                ) {
-                    items(
-                        items = state.products,
-                        key = { it.id }
-                    ) { product ->
-                        ProductRow(product)
-                    }
+                }
 
-                    item(key = "pagination_footer") {
-                        PaginationFooter(
-                            state = state,
-                            onRetry = onRetryLoadMore
+                state.error != null -> {
+                    RetryMessage(
+                        state.error,
+                        onRefresh
+                    )
+                }
+
+                state.products.isEmpty() -> {
+                    RetryMessage(
+                        "No products found",
+                        onRefresh
+                    )
+                }
+
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        state = listState,
+                        contentPadding = PaddingValues(
+                            vertical = 8.dp
                         )
+                    ) {
+                        items(
+                            items = state.products,
+                            key = { it.id }
+                        ) { product ->
+                            SwipeProductRow(
+                                product = product,
+                                deleting =
+                                    product.id in state.deletingIds,
+                                onEdit = {
+                                    onEdit(product.id)
+                                },
+                                onDelete = {
+                                    onDelete(product.id)
+                                }
+                            )
+                        }
+
+                        item(key = "footer") {
+                            PaginationFooter(
+                                state = state,
+                                onRetry = onRetryLoadMore
+                            )
+                        }
                     }
                 }
             }
@@ -197,41 +232,41 @@ fun ProductListScreen(
 }
 
 @Composable
-private fun CategoryDropdown(
+private fun CategorySelector(
     categories: List<ProductCategory>,
-    selectedSlug: String?,
+    selected: String?,
     onSelected: (String?) -> Unit
 ) {
     var expanded by remember {
         mutableStateOf(false)
     }
 
-    val selectedName = if (selectedSlug == null) {
+    val label = if (selected == null) {
         "All categories"
     } else {
-        categories.firstOrNull {
-            it.slug == selectedSlug
-        }?.name ?: selectedSlug
+        categories.firstOrNull { it.slug == selected }
+            ?.name ?: selected
     }
 
     Box {
         OutlinedButton(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = { expanded = true }
+            onClick = { expanded = true },
+            modifier = Modifier.fillMaxWidth()
         ) {
             Text(
-                text = selectedName,
+                label,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(4.dp))
             Text("▾")
         }
 
         DropdownMenu(
             expanded = expanded,
-            onDismissRequest = { expanded = false }
+            onDismissRequest = {
+                expanded = false
+            }
         ) {
             DropdownMenuItem(
                 text = { Text("All categories") },
@@ -255,105 +290,141 @@ private fun CategoryDropdown(
 }
 
 @Composable
-private fun ProductRow(product: Product) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(
-                horizontal = 16.dp,
-                vertical = 10.dp
-            ),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(84.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(
-                    MaterialTheme.colorScheme.surfaceVariant
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            if (product.thumbnail.isNullOrBlank()) {
+private fun SwipeProductRow(
+    product: Product,
+    deleting: Boolean,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { target ->
+            if (
+                target == SwipeToDismissBoxValue.EndToStart &&
+                !deleting
+            ) {
+                onDelete()
+            }
+
+            // Wait for API confirmation before removing.
+            false
+        }
+    )
+
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = false,
+        enableDismissFromEndToStart = !deleting,
+        backgroundContent = {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFFFEE2E2))
+                    .padding(end = 24.dp),
+                contentAlignment = Alignment.CenterEnd
+            ) {
                 Text(
-                    text = "No image",
-                    style = MaterialTheme.typography.labelSmall
-                )
-            } else {
-                SubcomposeAsyncImage(
-                    model = product.thumbnail,
-                    contentDescription = product.title,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                    loading = {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(22.dp),
-                                strokeWidth = 2.dp
-                            )
-                        }
-                    },
-                    error = {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "No image",
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        }
-                    }
+                    text = "Delete",
+                    color = Color(0xFFB91C1C),
+                    style = MaterialTheme.typography.titleMedium
                 )
             }
         }
-
-        Spacer(Modifier.width(14.dp))
-
-        Column(
-            modifier = Modifier.weight(1f)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(enabled = !deleting) {
+                    onEdit()
+                }
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = product.title,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
+            Box(
+                modifier = Modifier
+                    .size(78.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        MaterialTheme.colorScheme.surfaceVariant
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (product.thumbnail.isNullOrBlank()) {
+                    Text(
+                        "No image",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                } else {
+                    SubcomposeAsyncImage(
+                        model = product.thumbnail,
+                        contentDescription = product.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                        loading = {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                        },
+                        error = {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("No image")
+                            }
+                        }
+                    )
+                }
+            }
 
-            Spacer(Modifier.height(5.dp))
+            Spacer(Modifier.width(12.dp))
 
-            Text(
-                text = product.category.orEmpty()
-                    .replace("-", " ")
-                    .replaceFirstChar { it.uppercase() },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary
-            )
-
-            if (!product.description.isNullOrBlank()) {
-                Spacer(Modifier.height(5.dp))
-
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = product.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = product.title,
+                    style = MaterialTheme.typography.titleMedium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
+                )
+
+                Text(
+                    text = product.category.orEmpty()
+                        .replace("-", " "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                if (product.isSessionOnly) {
+                    Text(
+                        "Added this session",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+            }
+
+            if (deleting) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.dp
+                )
+            } else {
+                Text(
+                    "Edit",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
                 )
             }
         }
     }
 
-    HorizontalDivider(
-        modifier = Modifier.padding(
-            start = 114.dp,
-            end = 16.dp
-        ),
-        color = MaterialTheme.colorScheme.outlineVariant
-    )
+    HorizontalDivider()
 }
 
 @Composable
@@ -370,31 +441,20 @@ private fun PaginationFooter(
         when {
             state.isLoadingMore -> {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(24.dp)
                 )
             }
 
             state.loadMoreError != null -> {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = state.loadMoreError,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-
-                    TextButton(onClick = onRetry) {
-                        Text("Retry loading more")
-                    }
+                TextButton(onClick = onRetry) {
+                    Text("Retry loading more")
                 }
             }
 
             !state.hasMore -> {
                 Text(
-                    text = "All products loaded",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    "All products loaded",
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
         }
@@ -402,9 +462,9 @@ private fun PaginationFooter(
 }
 
 @Composable
-private fun CenteredMessage(
-    message: String,
-    showProgress: Boolean = false
+private fun CenterMessage(
+    text: String,
+    loading: Boolean = false
 ) {
     Box(
         modifier = Modifier.fillMaxSize(),
@@ -413,21 +473,19 @@ private fun CenteredMessage(
         Column(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            if (showProgress) {
+            if (loading) {
                 CircularProgressIndicator()
                 Spacer(Modifier.height(16.dp))
             }
-
-            Text(message)
+            Text(text)
         }
     }
 }
 
 @Composable
-private fun ErrorContent(
+private fun RetryMessage(
     message: String,
-    onRetry: () -> Unit,
-    buttonText: String = "Retry"
+    onRetry: () -> Unit
 ) {
     Box(
         modifier = Modifier
@@ -438,16 +496,12 @@ private fun ErrorContent(
         Column(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Text(message)
 
             Spacer(Modifier.height(16.dp))
 
             Button(onClick = onRetry) {
-                Text(buttonText)
+                Text("Retry")
             }
         }
     }

@@ -6,7 +6,11 @@ data class Product(
     val title: String,
     val description: String? = null,
     val category: String? = null,
-    val thumbnail: String? = null
+    val thumbnail: String? = null,
+
+    // Local session metadata. Not sent in API requests.
+    val isSessionOnly: Boolean = false,
+    val apiId: Int? = null
 )
 
 data class ProductPage(

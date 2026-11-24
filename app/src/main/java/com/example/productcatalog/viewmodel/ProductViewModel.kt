@@ -4,17 +4,13 @@ package com.example.productcatalog.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.example.productcatalog.data.model.Product
-import com.example.productcatalog.data.model.ProductCategory
+import com.example.productcatalog.data.model.*
 import com.example.productcatalog.data.repository.ProductRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import retrofit2.HttpException
-import java.net.SocketTimeoutException
-import java.net.UnknownHostException
 
 data class ProductUiState(
     val products: List<Product> = emptyList(),
@@ -23,10 +19,14 @@ data class ProductUiState(
 
     val isLoading: Boolean = false,
     val isLoadingMore: Boolean = false,
+    val isSaving: Boolean = false,
+
+    val deletingIds: Set<Int> = emptySet(),
 
     val error: String? = null,
     val loadMoreError: String? = null,
     val categoriesError: String? = null,
+    val mutationError: String? = null,
 
     val nextSkip: Int = 0,
     val total: Int = 0,
@@ -37,20 +37,29 @@ class ProductViewModel(
     private val repository: ProductRepository
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(
-        ProductUiState()
-    )
+    private val _state = MutableStateFlow(ProductUiState())
     val state = _state.asStateFlow()
+
+    private var remoteProducts = emptyList<Product>()
+
+    private val addedProducts = mutableListOf<Product>()
+    private val editedProducts = mutableMapOf<Int, Product>()
+    private val deletedIds = mutableSetOf<Int>()
+
+    private var nextLocalId = -1
 
     private var pageJob: Job? = null
     private var categoriesJob: Job? = null
-
     private var requestVersion = 0
     private var sessionActive = false
 
     companion object {
         private const val PAGE_SIZE = 20
     }
+
+    // ------------------------------------------------
+    // Session management
+    // ------------------------------------------------
 
     fun onAuthenticated() {
         if (sessionActive) return
@@ -67,8 +76,63 @@ class ProductViewModel(
         pageJob?.cancel()
         categoriesJob?.cancel()
 
+        remoteProducts = emptyList()
+        addedProducts.clear()
+        editedProducts.clear()
+        deletedIds.clear()
+
+        nextLocalId = -1
         _state.value = ProductUiState()
     }
+
+    // ------------------------------------------------
+    // Session overlay
+    // ------------------------------------------------
+
+    private fun visibleProducts(): List<Product> {
+        val selected = _state.value.selectedCategory
+
+        val remoteIds = remoteProducts
+            .mapTo(mutableSetOf()) { it.id }
+
+        // Edited products can move between categories.
+        // Keep them visible even when absent from
+        // the current server page.
+        val pinnedEdits = editedProducts.values
+            .filter { it.id !in remoteIds }
+
+        val remoteWithEdits = remoteProducts.map {
+            editedProducts[it.id] ?: it
+        }
+
+        return (
+            addedProducts.asReversed() +
+                pinnedEdits +
+                remoteWithEdits
+            )
+            .filter { product ->
+                product.id !in deletedIds &&
+                    (selected == null ||
+                        product.category == selected)
+            }
+            .distinctBy { it.id }
+    }
+
+    private fun publishProducts() {
+        _state.value = _state.value.copy(
+            products = visibleProducts()
+        )
+    }
+
+    fun findProduct(id: Int): Product? {
+        return addedProducts.firstOrNull { it.id == id }
+            ?: editedProducts[id]
+            ?: remoteProducts.firstOrNull { it.id == id }
+    }
+
+    // ------------------------------------------------
+    // Categories
+    // ------------------------------------------------
 
     fun loadCategories() {
         if (!sessionActive) return
@@ -81,11 +145,11 @@ class ProductViewModel(
 
         categoriesJob = viewModelScope.launch {
             try {
-                val categories = repository.getCategories()
+                val result = repository.getCategories()
 
                 if (sessionActive) {
                     _state.value = _state.value.copy(
-                        categories = categories,
+                        categories = result,
                         categoriesError = null
                     )
                 }
@@ -112,6 +176,10 @@ class ProductViewModel(
         refresh()
     }
 
+    // ------------------------------------------------
+    // Pagination
+    // ------------------------------------------------
+
     fun refresh() {
         if (!sessionActive) return
 
@@ -119,11 +187,12 @@ class ProductViewModel(
         val version = requestVersion
 
         pageJob?.cancel()
+        remoteProducts = emptyList()
 
         val selected = _state.value.selectedCategory
 
         _state.value = _state.value.copy(
-            products = emptyList(),
+            products = visibleProducts(),
             isLoading = true,
             isLoadingMore = false,
             error = null,
@@ -145,20 +214,22 @@ class ProductViewModel(
                     version != requestVersion
                 ) return@launch
 
-                val unique = page.products.distinctBy {
+                remoteProducts = page.products.distinctBy {
                     it.id
                 }
 
                 val next = page.skip + page.products.size
 
                 _state.value = _state.value.copy(
-                    products = unique,
                     isLoading = false,
-                    total = page.total,
                     nextSkip = next,
+                    total = page.total,
                     hasMore = page.products.isNotEmpty() &&
                         next < page.total
                 )
+
+                publishProducts()
+
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -175,27 +246,27 @@ class ProductViewModel(
     }
 
     fun loadNextPage() {
-        val snapshot = _state.value
+        val current = _state.value
 
         if (!sessionActive ||
-            snapshot.isLoading ||
-            snapshot.isLoadingMore ||
-            !snapshot.hasMore ||
-            snapshot.error != null ||
-            snapshot.loadMoreError != null
+            current.isLoading ||
+            current.isLoadingMore ||
+            !current.hasMore ||
+            current.error != null ||
+            current.loadMoreError != null
         ) return
 
         val version = requestVersion
 
-        _state.value = snapshot.copy(
+        _state.value = current.copy(
             isLoadingMore = true
         )
 
         pageJob = viewModelScope.launch {
             try {
                 val page = repository.getPage(
-                    categorySlug = snapshot.selectedCategory,
-                    skip = snapshot.nextSkip,
+                    categorySlug = current.selectedCategory,
+                    skip = current.nextSkip,
                     limit = PAGE_SIZE
                 )
 
@@ -203,18 +274,13 @@ class ProductViewModel(
                     version != requestVersion
                 ) return@launch
 
-                val current = _state.value
-                val ids = current.products
-                    .mapTo(mutableSetOf()) { it.id }
-
-                val newProducts = page.products.filter {
-                    ids.add(it.id)
-                }
+                remoteProducts = (
+                    remoteProducts + page.products
+                    ).distinctBy { it.id }
 
                 val next = page.skip + page.products.size
 
-                _state.value = current.copy(
-                    products = current.products + newProducts,
+                _state.value = _state.value.copy(
                     isLoadingMore = false,
                     loadMoreError = null,
                     nextSkip = next,
@@ -222,6 +288,8 @@ class ProductViewModel(
                     hasMore = page.products.isNotEmpty() &&
                         next < page.total
                 )
+
+                publishProducts()
 
             } catch (e: CancellationException) {
                 throw e
@@ -245,21 +313,194 @@ class ProductViewModel(
         loadNextPage()
     }
 
-    private fun errorMessage(error: Throwable): String {
-        return when (error) {
-            is UnknownHostException ->
-                "No internet connection. Please try again."
+    // ------------------------------------------------
+    // Add and Edit
+    // ------------------------------------------------
 
-            is SocketTimeoutException ->
-                "The request timed out. Please retry."
-
-            is HttpException ->
-                "Server error: HTTP ${error.code()}"
-
-            else ->
-                error.localizedMessage
-                    ?: "Something went wrong."
+    fun saveProduct(
+        editingId: Int?,
+        request: ProductWriteRequest,
+        onSuccess: () -> Unit
+    ) {
+        if (!sessionActive || _state.value.isSaving) {
+            return
         }
+
+        val title = request.title.trim()
+        val category = request.category.trim()
+
+        if (title.isBlank() || category.isBlank()) {
+            _state.value = _state.value.copy(
+                mutationError = "Name and category are required"
+            )
+            return
+        }
+
+        val cleanRequest = request.copy(
+            title = title,
+            category = category,
+            description = request.description.trim()
+        )
+
+        _state.value = _state.value.copy(
+            isSaving = true,
+            mutationError = null
+        )
+
+        viewModelScope.launch {
+            try {
+                if (editingId == null) {
+
+                    // ADD: call API and keep the result
+                    val returned = repository.addProduct(
+                        cleanRequest
+                    )
+
+                    val local = returned.copy(
+                        id = nextLocalId--,
+                        title = returned.title.ifBlank {
+                            cleanRequest.title
+                        },
+                        description = returned.description
+                            ?: cleanRequest.description,
+                        category = returned.category
+                            ?: cleanRequest.category,
+                        isSessionOnly = true,
+                        apiId = returned.id
+                    )
+
+                    if (!sessionActive) return@launch
+                    addedProducts.add(local)
+
+                } else {
+                    val existing = findProduct(editingId)
+                        ?: throw IllegalStateException(
+                            "Product not found"
+                        )
+
+                    if (existing.isSessionOnly) {
+                        // DummyJSON cannot update simulated
+                        // creations through a real server ID.
+                        val index = addedProducts.indexOfFirst {
+                            it.id == editingId
+                        }
+
+                        if (index == -1) {
+                            throw IllegalStateException(
+                                "Local product not found"
+                            )
+                        }
+
+                        addedProducts[index] = existing.copy(
+                            title = cleanRequest.title,
+                            description = cleanRequest.description,
+                            category = cleanRequest.category
+                        )
+
+                    } else {
+                        // EDIT: use the actual API response
+                        val returned = repository.updateProduct(
+                            existing.id,
+                            cleanRequest
+                        )
+
+                        if (!sessionActive) return@launch
+
+                        editedProducts[existing.id] =
+                            existing.copy(
+                                title = returned.title,
+                                description = returned.description
+                                    ?: cleanRequest.description,
+                                category = returned.category
+                                    ?: cleanRequest.category
+                            )
+                    }
+                }
+
+                if (!sessionActive) return@launch
+
+                _state.value = _state.value.copy(
+                    isSaving = false,
+                    mutationError = null
+                )
+
+                publishProducts()
+                onSuccess()
+
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (sessionActive) {
+                    _state.value = _state.value.copy(
+                        isSaving = false,
+                        mutationError = errorMessage(e)
+                    )
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------
+    // Swipe-to-delete
+    // ------------------------------------------------
+
+    fun deleteProduct(id: Int) {
+        if (!sessionActive ||
+            id in _state.value.deletingIds
+        ) return
+
+        val product = findProduct(id) ?: return
+
+        _state.value = _state.value.copy(
+            deletingIds = _state.value.deletingIds + id,
+            mutationError = null
+        )
+
+        viewModelScope.launch {
+            try {
+                if (product.isSessionOnly) {
+                    // Delete a simulated creation locally.
+                    addedProducts.removeAll { it.id == id }
+                } else {
+                    // Remove only after API confirmation.
+                    repository.deleteProduct(product.id)
+
+                    if (!sessionActive) return@launch
+
+                    deletedIds.add(product.id)
+                    editedProducts.remove(product.id)
+                }
+
+                if (!sessionActive) return@launch
+
+                _state.value = _state.value.copy(
+                    deletingIds = _state.value.deletingIds - id
+                )
+
+                publishProducts()
+
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (sessionActive) {
+                    _state.value = _state.value.copy(
+                        deletingIds = _state.value.deletingIds - id,
+                        mutationError = errorMessage(e)
+                    )
+                }
+            }
+        }
+    }
+
+    fun clearMutationError() {
+        _state.value = _state.value.copy(
+            mutationError = null
+        )
+    }
+
+    private fun errorMessage(error: Throwable): String {
+        return error.localizedMessage
+            ?: "Something went wrong. Please retry."
     }
 }
 

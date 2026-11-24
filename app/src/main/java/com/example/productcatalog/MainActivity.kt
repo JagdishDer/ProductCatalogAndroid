@@ -3,11 +3,12 @@ package com.example.productcatalog
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModelProvider
@@ -19,17 +20,15 @@ import com.example.productcatalog.data.repository.ProductRepository
 import com.example.productcatalog.data.security.SecureTokenStore
 import com.example.productcatalog.ui.login.LoginScreen
 import com.example.productcatalog.ui.products.ProductListScreen
-import com.example.productcatalog.viewmodel.AuthViewModel
-import com.example.productcatalog.viewmodel.AuthViewModelFactory
-import com.example.productcatalog.viewmodel.ProductViewModel
-import com.example.productcatalog.viewmodel.ProductViewModelFactory
+import com.example.productcatalog.ui.editor.ProductEditorScreen
+import com.example.productcatalog.viewmodel.*
 
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Existing Phase 1 authentication
+        // Preserve Phase 1 secure authentication
         val authRepository = AuthRepository(
             applicationContext
         )
@@ -39,15 +38,12 @@ class MainActivity : ComponentActivity() {
             AuthViewModelFactory(authRepository)
         )[AuthViewModel::class.java]
 
-        // Phase 2 product API
-        // Uses the same encrypted token storage as login.
+        // Use the same encrypted token store
         val tokenStore = SecureTokenStore(
             applicationContext
         )
 
-        val productApi = ApiClient(
-            tokenStore
-        ).api
+        val productApi = ApiClient(tokenStore).api
 
         val productRepository = ProductRepository(
             productApi
@@ -67,14 +63,31 @@ class MainActivity : ComponentActivity() {
                 val productState by productViewModel.state
                     .collectAsStateWithLifecycle()
 
-                // Load products after successful authentication.
-                // Clear the product session after logout.
+                var editorOpen by rememberSaveable {
+                    mutableStateOf(false)
+                }
+
+                var editingId by rememberSaveable {
+                    mutableStateOf<Int?>(null)
+                }
+
                 LaunchedEffect(authState.username) {
                     if (authState.username != null) {
                         productViewModel.onAuthenticated()
                     } else {
                         productViewModel.onSignedOut()
+                        editorOpen = false
+                        editingId = null
                     }
+                }
+
+                BackHandler(
+                    enabled = editorOpen &&
+                        !productState.isSaving
+                ) {
+                    editorOpen = false
+                    editingId = null
+                    productViewModel.clearMutationError()
                 }
 
                 when {
@@ -87,7 +100,38 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    authState.username != null -> {
+                    authState.username == null -> {
+                        LoginScreen(
+                            state = authState,
+                            onLogin = authViewModel::login
+                        )
+                    }
+
+                    editorOpen -> {
+                        ProductEditorScreen(
+                            product = editingId?.let {
+                                productViewModel.findProduct(it)
+                            },
+                            state = productState,
+                            onCancel = {
+                                editorOpen = false
+                                editingId = null
+                                productViewModel.clearMutationError()
+                            },
+                            onSave = { request ->
+                                productViewModel.saveProduct(
+                                    editingId = editingId,
+                                    request = request,
+                                    onSuccess = {
+                                        editorOpen = false
+                                        editingId = null
+                                    }
+                                )
+                            }
+                        )
+                    }
+
+                    else -> {
                         ProductListScreen(
                             state = productState,
                             onSelectCategory =
@@ -101,14 +145,21 @@ class MainActivity : ComponentActivity() {
                             onRetryCategories =
                                 productViewModel::loadCategories,
                             onLogout =
-                                authViewModel::logout
-                        )
-                    }
-
-                    else -> {
-                        LoginScreen(
-                            state = authState,
-                            onLogin = authViewModel::login
+                                authViewModel::logout,
+                            onAdd = {
+                                productViewModel.clearMutationError()
+                                editingId = null
+                                editorOpen = true
+                            },
+                            onEdit = { productId ->
+                                productViewModel.clearMutationError()
+                                editingId = productId
+                                editorOpen = true
+                            },
+                            onDelete =
+                                productViewModel::deleteProduct,
+                            onClearMutationError =
+                                productViewModel::clearMutationError
                         )
                     }
                 }
