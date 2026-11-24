@@ -18,9 +18,9 @@ import com.example.productcatalog.data.remote.ApiClient
 import com.example.productcatalog.data.repository.AuthRepository
 import com.example.productcatalog.data.repository.ProductRepository
 import com.example.productcatalog.data.security.SecureTokenStore
+import com.example.productcatalog.ui.editor.ProductEditorScreen
 import com.example.productcatalog.ui.login.LoginScreen
 import com.example.productcatalog.ui.products.ProductListScreen
-import com.example.productcatalog.ui.editor.ProductEditorScreen
 import com.example.productcatalog.viewmodel.*
 
 class MainActivity : ComponentActivity() {
@@ -28,7 +28,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Preserve Phase 1 secure authentication
+        // Secure authentication from Phase 1.
         val authRepository = AuthRepository(
             applicationContext
         )
@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
             AuthViewModelFactory(authRepository)
         )[AuthViewModel::class.java]
 
-        // Use the same encrypted token store
+        // Product API, using the same encrypted token store.
         val tokenStore = SecureTokenStore(
             applicationContext
         )
@@ -87,6 +87,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     editorOpen = false
                     editingId = null
+
                     productViewModel.clearMutationError()
                 }
 
@@ -113,15 +114,19 @@ class MainActivity : ComponentActivity() {
                                 productViewModel.findProduct(it)
                             },
                             state = productState,
+
                             onCancel = {
                                 editorOpen = false
                                 editingId = null
                                 productViewModel.clearMutationError()
                             },
-                            onSave = { request ->
+
+                            onSave = { request, imageUri ->
                                 productViewModel.saveProduct(
                                     editingId = editingId,
                                     request = request,
+                                    imageUri = imageUri,
+
                                     onSuccess = {
                                         editorOpen = false
                                         editingId = null
@@ -134,30 +139,40 @@ class MainActivity : ComponentActivity() {
                     else -> {
                         ProductListScreen(
                             state = productState,
+
                             onSelectCategory =
                                 productViewModel::selectCategory,
+
                             onRefresh =
                                 productViewModel::refresh,
+
                             onLoadMore =
                                 productViewModel::loadNextPage,
+
                             onRetryLoadMore =
                                 productViewModel::retryLoadMore,
+
                             onRetryCategories =
                                 productViewModel::loadCategories,
+
                             onLogout =
                                 authViewModel::logout,
+
                             onAdd = {
                                 productViewModel.clearMutationError()
                                 editingId = null
                                 editorOpen = true
                             },
+
                             onEdit = { productId ->
                                 productViewModel.clearMutationError()
                                 editingId = productId
                                 editorOpen = true
                             },
+
                             onDelete =
                                 productViewModel::deleteProduct,
+
                             onClearMutationError =
                                 productViewModel::clearMutationError
                         )

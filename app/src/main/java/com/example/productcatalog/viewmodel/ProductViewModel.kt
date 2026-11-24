@@ -317,9 +317,11 @@ class ProductViewModel(
     // Add and Edit
     // ------------------------------------------------
 
+   
     fun saveProduct(
         editingId: Int?,
         request: ProductWriteRequest,
+        imageUri: String?,
         onSuccess: () -> Unit
     ) {
         if (!sessionActive || _state.value.isSaving) {
@@ -342,6 +344,13 @@ class ProductViewModel(
             description = request.description.trim()
         )
 
+        // Only locally stored images are attached to
+        // the session product. No image is uploaded.
+        val selectedLocalImage = imageUri?.takeIf {
+            it.startsWith("file://") ||
+                it.startsWith("content://")
+        }
+
         _state.value = _state.value.copy(
             isSaving = true,
             mutationError = null
@@ -351,10 +360,13 @@ class ProductViewModel(
             try {
                 if (editingId == null) {
 
-                    // ADD: call API and keep the result
+                    // Create through DummyJSON and retain the
+                    // returned product in our local session.
                     val returned = repository.addProduct(
                         cleanRequest
                     )
+
+                    if (!sessionActive) return@launch
 
                     val local = returned.copy(
                         id = nextLocalId--,
@@ -365,11 +377,12 @@ class ProductViewModel(
                             ?: cleanRequest.description,
                         category = returned.category
                             ?: cleanRequest.category,
+                        thumbnail = selectedLocalImage
+                            ?: returned.thumbnail,
                         isSessionOnly = true,
                         apiId = returned.id
                     )
 
-                    if (!sessionActive) return@launch
                     addedProducts.add(local)
 
                 } else {
@@ -379,13 +392,13 @@ class ProductViewModel(
                         )
 
                     if (existing.isSessionOnly) {
-                        // DummyJSON cannot update simulated
-                        // creations through a real server ID.
+                        // Simulated newly added records cannot
+                        // be updated via the server API.
                         val index = addedProducts.indexOfFirst {
                             it.id == editingId
                         }
 
-                        if (index == -1) {
+                        if (index < 0) {
                             throw IllegalStateException(
                                 "Local product not found"
                             )
@@ -394,11 +407,13 @@ class ProductViewModel(
                         addedProducts[index] = existing.copy(
                             title = cleanRequest.title,
                             description = cleanRequest.description,
-                            category = cleanRequest.category
+                            category = cleanRequest.category,
+                            thumbnail = selectedLocalImage
+                                ?: existing.thumbnail
                         )
 
                     } else {
-                        // EDIT: use the actual API response
+                        // Send text changes to DummyJSON.
                         val returned = repository.updateProduct(
                             existing.id,
                             cleanRequest
@@ -406,13 +421,17 @@ class ProductViewModel(
 
                         if (!sessionActive) return@launch
 
+                        // Keep the local image, because the
+                        // API does not upload or persist images.
                         editedProducts[existing.id] =
                             existing.copy(
                                 title = returned.title,
                                 description = returned.description
                                     ?: cleanRequest.description,
                                 category = returned.category
-                                    ?: cleanRequest.category
+                                    ?: cleanRequest.category,
+                                thumbnail = selectedLocalImage
+                                    ?: existing.thumbnail
                             )
                     }
                 }
@@ -439,6 +458,7 @@ class ProductViewModel(
             }
         }
     }
+
 
     // ------------------------------------------------
     // Swipe-to-delete
